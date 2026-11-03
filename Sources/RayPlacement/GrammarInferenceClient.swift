@@ -104,7 +104,7 @@ actor DefaultGrammarToolFreeRuntime: GrammarToolFreeRuntime {
         switch request.provider {
         case .codexCLI:
             return try await codexPool.infer(request)
-        case .claudeCLI:
+        case .claudeCLI, .opencodeCLI:
             return try await CLIChatProviderClient.inferToolFree(
                 provider: request.provider, model: request.model,
                 input: request.input, instructions: request.instructions

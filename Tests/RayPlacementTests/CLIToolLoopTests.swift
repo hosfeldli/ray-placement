@@ -3,7 +3,7 @@ import Testing
 @testable import RayPlacement
 
 @Test @MainActor func cliProvidersRouteOnlyEnabledBrowserAndNotesTools() {
-    for provider in [AIProvider.codexCLI, .claudeCLI] {
+    for provider in [AIProvider.codexCLI, .claudeCLI, .opencodeCLI] {
         let conversation = AIConversation(provider: provider, model: "default")
         let model = AIChatViewModel(
             store: AIConversationStore(fixtures: [conversation]),
@@ -36,6 +36,7 @@ private final class CLIOutputCapture {
 }
 
 @Test @MainActor func cliEnvelopeExecutesNativeToolAndContinuesThroughLima() async throws {
+    for provider in AIProvider.chatProviders.filter(\.isCLI) {
     let tool = try #require(LimaAIToolRegistry.definitions.first { $0.id == "get_lima_status" })
     let envelope = #"{"kind":"tool_call","text":"","tool":"get_lima_status","arguments":"{}"}"#
     let events = try CLIChatProviderClient.events(from: envelope, localTools: [tool])
@@ -51,7 +52,7 @@ private final class CLIOutputCapture {
         capture.history = history
     }
 
-    let conversation = AIConversation(provider: .codexCLI, model: "default")
+    let conversation = AIConversation(provider: provider, model: "default")
     let store = AIConversationStore(fixtures: [conversation])
     let model = AIChatViewModel(
         store: store,
@@ -76,4 +77,5 @@ private final class CLIOutputCapture {
     })
     #expect(model.selectedConversation?.messages.last?.text.contains("Lima status checked.") == true)
     #expect(model.selectedConversation?.messages.last?.activities?.contains { $0.kind == .toolCompleted } == true)
+    }
 }

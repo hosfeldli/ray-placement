@@ -80,6 +80,12 @@ enum AIProviderSetupInstructions {
                 "Run claude in Terminal and complete its interactive sign-in there. Lima does not collect that credential.",
                 "Return to Lima, choose CLI default or a model, then select Test Connection."
             ]
+        case .opencodeCLI:
+            return [
+                "Install OpenCode so the opencode command is available in Terminal.",
+                "Run opencode auth login in Terminal. Lima uses that existing login without copying its credentials.",
+                "Return to Lima, select OpenCode CLI, refresh models or enter a provider/model ID, then Test Connection."
+            ]
         case .openAICompatible:
             return [
                 "Enter your server's base URL and model ID in AI Settings. An API key is optional if the server does not require one.",

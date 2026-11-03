@@ -170,6 +170,8 @@ enum AIModelPickerPolicy {
             return true // The configured endpoint owns its own model names.
         case .codexCLI:
             return CLIChatProviderClient.isValidModelID(id)
+        case .opencodeCLI:
+            return CLIChatProviderClient.isValidModelID(id)
         case .claudeCLI:
             return value == "default" // No model catalog endpoint in this adapter.
         case .mistral, .xAI, .deepSeek, .openRouter:

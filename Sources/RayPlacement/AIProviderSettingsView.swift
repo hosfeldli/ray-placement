@@ -19,10 +19,12 @@ struct AIProviderSettingsView: View {
     @State private var message: String?
     @State private var webSearchRemovalMessage: String?
     @State private var confirmRemove = false
+    private let conversationOnly: Bool
 
-    init(model: AIChatViewModel) {
+    init(model: AIChatViewModel, conversationOnly: Bool = false) {
         self.model = model
         self.credentials = model.credentials
+        self.conversationOnly = conversationOnly
     }
 
     private var busy: Bool { model.canEndTask || model.isLoadingModels }
@@ -33,6 +35,7 @@ struct AIProviderSettingsView: View {
 
     var body: some View {
         Form {
+            if !conversationOnly {
             Section("AI availability") {
                 Toggle("Enable AI throughout Lima", isOn: $settings.aiEnabled)
                 Text("Turning this off stops AI chats, provider requests, AI tools, and grammar assistance. Local dictation, search, files, notes, and saved chats remain available. Keys, model preferences, and action choices are retained.")
@@ -141,6 +144,7 @@ struct AIProviderSettingsView: View {
                 Text("All AI terminal commands appear in Terminal. AI Workspace shells have the same filesystem and network access as your user account; the selected Project or Scratch folder is only the starting directory. Outside Full Control, each terminal action still needs Lima review when enabled. Directory-scoped grants do not apply to unrestricted commands. A timeout may not stop child processes started by code.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
+            }
             Section("Conversation configuration") {
                 Text("Changes apply to the selected Workspace conversation and new conversations created from it. Writing and agents keep their own model selections.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
@@ -154,7 +158,9 @@ struct AIProviderSettingsView: View {
                     ForEach(model.pickerModels) { Text($0.displayName).tag($0.id) }
                 }
                 .disabled(busy)
-                Text(model.provider == .codexCLI
+                Text(model.provider == .opencodeCLI
+                    ? "Models come from opencode models. Use CLI default or a provider/model ID. Refresh Models updates the catalog; Test Connection sends a short request using your existing OpenCode login."
+                    : model.provider == .codexCLI
                     ? "Models come from your installed Codex app-server catalog. Listed models are not guaranteed to be available for your account; a successful request verifies access. Your selection stays visible and is never silently reset."
                     : model.provider.isCLI
                         ? "Shows the CLI default and model IDs that passed a connection test in the last 30 days. The current model stays visible even if it has not been tested."
@@ -163,7 +169,7 @@ struct AIProviderSettingsView: View {
                 TextField("Custom model ID", text: $customModel).disabled(busy)
                 if model.provider.isCLI {
                     AIProviderSetupChecklist(provider: model.provider)
-                    Text("Both CLIs use Lima's authorized tool catalog and Tool Access policy. CLI default lets the CLI choose a model. Codex CLI can receive attached images here; Claude CLI remains text-only in this adapter.")
+                    Text("CLI providers use Lima's authorized tool catalog and Tool Access policy. CLI default lets the CLI choose a model. Codex and OpenCode can receive attached images here; Claude CLI remains text-only in this adapter.")
                         .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
                 if model.provider == .openAICompatible {
@@ -266,7 +272,7 @@ struct AIProviderSettingsView: View {
                 HStack {
                     Button("Test Connection") { message = nil; model.testConnection() }
                         .disabled(!settings.aiEnabled || busy || !model.hasProviderAPIKey || configurationChanged)
-                    if !model.provider.isCLI || model.provider == .codexCLI {
+                    if !model.provider.isCLI || model.provider == .codexCLI || model.provider == .opencodeCLI {
                         Button("Refresh Models") { message = nil; model.refreshModels() }
                             .disabled(!settings.aiEnabled || busy || !model.hasProviderAPIKey || configurationChanged)
                     }
@@ -275,7 +281,9 @@ struct AIProviderSettingsView: View {
                         Button("Stop") { model.cancelModelDiscovery() }
                     }
                 }
-                Text(model.provider == .codexCLI
+                Text(model.provider == .opencodeCLI
+                    ? "Models come from opencode models. Use CLI default or a provider/model ID. Refresh Models updates the catalog; Test Connection sends a short request using your existing OpenCode login."
+                    : model.provider == .codexCLI
                     ? "Codex models load from the installed app-server and refresh automatically when the catalog is older than 24 hours. Refresh Models only updates the catalog; Test Connection sends a short request to verify your sign-in and selected model."
                     : model.provider.isCLI
                         ? "Test Connection sends a short text prompt through the installed CLI and verifies its local sign-in and selected model. It does not test Lima tools. Use CLI default or enter a model ID."

@@ -78,3 +78,23 @@ import RayPlacementCore
         return
     }
 }
+
+@Test func searchRelevancePrefersCompleteWordsAndCoreAliasesToLongerPrefixes() async throws {
+    let commands: [(String,String,[String])] = [
+        ("app.terminalizer", "Terminalizer", []),
+        ("builtin.terminal", "Open Terminal", ["terminal", "shell"]),
+        ("note.meeting", "Terminal plans", []),
+        ("note.body", "Meeting", ["terminal"])
+    ]
+    let inputs = commands.map { id,title,keywords in
+        LauncherSearchDocumentInput(item: LauncherItem(id:id,title:title,subtitle:"",icon:.system("star"),keywords:keywords,action:.copyText("fixture")),userAliases:[],extensionAliases:[],rankingBonus:id.hasPrefix("note.") ? 100_000 : 0)
+    }
+    let hits = await LauncherSearchEngine().search(.init(rawQuery:"terminal",generation:1),catalog:.init(revision:1,inputs:inputs)).hits
+    #expect(hits.first?.id == "builtin.terminal")
+    #expect(try #require(hits.firstIndex { $0.id == "note.meeting" }) < #require(hits.firstIndex { $0.id == "app.terminalizer" }))
+    let exactWord = try #require(SearchRelevance.score(title:"Open Terminal",fields:[],body:"",query:"terminal"))
+    let prefix = try #require(SearchRelevance.score(title:"Terminalizer",fields:[],body:"",query:"terminal"))
+    #expect(exactWord > prefix)
+    #expect(SearchRelevance.score(title:"Open Settings",fields:[],body:"",query:"open open") == nil)
+    #expect(SearchRelevance.score(title:"Settings Setup",fields:[],body:"",query:"set setting") != nil)
+}

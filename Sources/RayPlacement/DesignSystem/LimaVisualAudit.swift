@@ -20,6 +20,26 @@ enum LimaVisualAudit {
         } catch { fputs("Cannot create visual audit output\n", stderr); exit(1) }
 
         Task { @MainActor in
+            if CommandLine.arguments.contains("--opencode-only") {
+                var failures = 0
+                for dark in [false, true] {
+                    let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+                    application.appearance = appearance
+                    for scale in [1.0, 1.4] {
+                        AppTypography.shared.scale = scale
+                        for width: CGFloat in [600, 1000] {
+                            let model = AIChatVisualFixtures.model(for: .empty)
+                            model.selectProvider(.opencodeCLI)
+                            let view = AIProviderSettingsView(model: model, conversationOnly: true).background(LimaTheme.surfacePrimary)
+                                .environment(\.colorScheme, dark ? .dark : .light)
+                            if !(await render(view, size: NSSize(width: width, height: 800), appearance: appearance,
+                                url: directory.appendingPathComponent("opencode-\(Int(width))-\(Int(scale * 100))-\(dark ? "dark" : "light").png"))) { failures += 1 }
+                        }
+                    }
+                }
+                print("OpenCode settings audit finished: \(failures) render failures")
+                exit(failures == 0 ? 0 : 1)
+            }
             if CommandLine.arguments.contains("--extension-library-only") {
                 var failures = 0
                 for dark in [false, true] {

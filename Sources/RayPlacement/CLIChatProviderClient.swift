@@ -23,6 +23,7 @@ struct CLIChatProviderClient: AIChatTransport {
         case invalidToolResponse
         case unavailableTool(String)
         case toolCatalogTooLarge
+        case invalidCLIConfiguration
 
         var errorDescription: String? {
             switch self {
@@ -46,6 +47,8 @@ struct CLIChatProviderClient: AIChatTransport {
                 return "The CLI requested \(name), which was not enabled for this request. Enable the tool in Lima and try again."
             case .toolCatalogTooLarge:
                 return "The supplied context is too large for this CLI request. Reduce the attachments or instructions and try again."
+            case .invalidCLIConfiguration:
+                return "OpenCode's inline configuration is not a valid JSON object. Check OPENCODE_CONFIG_CONTENT in your CLI environment."
             }
         }
     }
@@ -68,6 +71,11 @@ struct CLIChatProviderClient: AIChatTransport {
     }
 
     let provider: AIProvider
+    private let executableOverride: URL?
+    init(provider: AIProvider, executableURL: URL? = nil) {
+        self.provider = provider
+        self.executableOverride = executableURL
+    }
     private static let maximumOutputBytes = 2 * 1024 * 1024
 
     struct TransientImage: Sendable, Equatable {
@@ -101,12 +109,13 @@ struct CLIChatProviderClient: AIChatTransport {
         switch provider {
         case .codexCLI: name = "codex"
         case .claudeCLI: name = "claude"
+        case .opencodeCLI: name = "opencode"
         default: return nil
         }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let pathEntries = (ProcessInfo.processInfo.environment["PATH"] ?? "")
             .split(separator: ":").map(String.init)
-        let directories = [home + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] + pathEntries
+        let directories = [home + "/.opencode/bin", home + "/.bun/bin", home + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] + pathEntries
         for directory in directories where directory.hasPrefix("/") {
             let url = URL(fileURLWithPath: directory).appendingPathComponent(name)
             if FileManager.default.isExecutableFile(atPath: url.path) { return url }
@@ -115,10 +124,16 @@ struct CLIChatProviderClient: AIChatTransport {
     }
 
     func listModels(apiKey: String) async throws -> [AIModelOption] {
-        let executable = Self.executableURL(for: provider)
+        let executable = executableOverride ?? Self.executableURL(for: provider)
         guard executable != nil else { throw Failure.missingCLI(provider.title) }
         if provider == .codexCLI {
             return try await CodexModelDiscoveryService.listModels(executableURL: executable)
+        }
+        if provider == .opencodeCLI {
+            let data = try await Self.run(provider: provider, model: "default", prompt: "",
+                structuredResponse: false, imageAttachments: [], transientImages: [], onStarted: {},
+                executableURLOverride: executable, argumentsOverride: ["models"], timeoutSeconds: 30)
+            return Self.openCodeModels(from: data)
         }
         // Claude CLI has no equivalent catalog endpoint in this adapter.
         return provider.chatModels
@@ -167,7 +182,7 @@ struct CLIChatProviderClient: AIChatTransport {
                     let prompt = try Self.prompt(
                         input: input, history: history, attachments: attachments,
                         systemInstructions: systemInstructions, localTools: bridgedTools,
-                        allowImages: provider == .codexCLI
+                        allowImages: provider.supportsChatImages
                     )
                     let output = try await Self.run(
                         provider: provider, model: model, prompt: prompt,
@@ -177,7 +192,7 @@ struct CLIChatProviderClient: AIChatTransport {
                         onStarted: {
                             continuation.yield(.activity(AIAgentActivity(kind: .thinking,
                                 title: "Thinking with " + provider.title, completed: false)))
-                        }
+                        }, executableURLOverride: executableOverride
                     )
                     try Task.checkCancellation()
                     let reply = try Self.extractReply(from: output, provider: provider)
@@ -234,7 +249,7 @@ struct CLIChatProviderClient: AIChatTransport {
         provider: AIProvider, model: String, input: String, instructions: String,
         executableURL: URL? = nil
     ) async throws -> String {
-        guard provider == .claudeCLI else { throw Failure.commandFailed(provider.title) }
+        guard provider == .claudeCLI || provider == .opencodeCLI else { throw Failure.commandFailed(provider.title) }
         let prompt = """
         \(instructions)
 
@@ -472,6 +487,72 @@ struct CLIChatProviderClient: AIChatTransport {
             && model.unicodeScalars.allSatisfy { allowed.contains($0) })
     }
 
+    static func openCodeEnvironment(in inherited: [String: String]) throws -> [String: String] {
+        var environment = inherited
+        // Preserve OpenCode's existing provider configuration and login. The
+        // selected adapter agent only returns text/tool envelopes to Lima.
+        let adapterConfig = #"{"permission":"deny","share":"disabled","autoupdate":false,"agent":{"lima":{"description":"Lima chat transport; actions are executed by Lima","mode":"primary","permission":"deny","tools":{"*":false}}}}"#
+        var configuration: [String: Any] = [:]
+        if let existing = inherited["OPENCODE_CONFIG_CONTENT"], !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(existing.utf8)) as? [String: Any] else {
+                throw Failure.invalidCLIConfiguration
+            }
+            configuration = object
+        }
+        let adapter = try JSONSerialization.jsonObject(with: Data(adapterConfig.utf8)) as! [String: Any]
+        var agents = configuration["agent"] as? [String: Any] ?? [:]
+        agents["lima"] = (adapter["agent"] as? [String: Any])?["lima"]
+        configuration.merge(adapter) { _, replacement in replacement }
+        configuration["agent"] = agents
+        environment["OPENCODE_CONFIG_CONTENT"] = String(decoding: try JSONSerialization.data(withJSONObject: configuration), as: UTF8.self)
+        environment["OPENCODE_PERMISSION"] = #"{"*":"deny"}"#
+        environment["OPENCODE_DISABLE_PROJECT_CONFIG"] = "true"
+        environment["OPENCODE_DISABLE_AUTOUPDATE"] = "true"
+        environment["OPENCODE_DISABLE_TERMINAL_TITLE"] = "true"
+        environment["NO_COLOR"] = "1"
+        return environment
+    }
+
+    static func openCodeModels(from data: Data) -> [AIModelOption] {
+        let ids = Set(String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.contains("/") && isValidModelID($0) })
+        return AIProvider.opencodeCLI.chatModels + ids.sorted().prefix(500).map {
+            AIModelOption(id: $0, displayName: $0, supportsReasoning: false)
+        }
+    }
+
+    static func openCodeReply(from data: Data) throws -> String {
+        var order: [String] = []
+        var parts: [String: String] = [:]
+        for (index, line) in data.split(separator: 0x0A).enumerated() {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
+            if object["type"] as? String == "error" {
+                let error = object["error"] as? [String: Any] ?? [:]
+                let detail = error["data"] as? [String: Any] ?? error
+                let status = detail["statusCode"] as? Int
+                let code = status == 401 || status == 403 ? "authentication_error"
+                    : status == 429 ? "rate_limit_exceeded" : "cli_provider_error"
+                throw Failure.diagnosed(Diagnostic(code: code, retryAfter: nil, exitCode: 0,
+                    eventType: "opencode_error", message: code == "cli_provider_error"
+                        ? "OpenCode reported a provider error. Check its local sign-in and selected model."
+                        : AIProviderFailure.message(error: ["code": code])))
+            }
+            guard object["type"] as? String == "text",
+                  let part = object["part"] as? [String: Any],
+                  let text = part["text"] as? String else { continue }
+            let id = part["id"] as? String ?? "part-\(index)"
+            if let previous = parts[id] {
+                parts[id] = text.hasPrefix(previous) ? text : previous + text
+            } else {
+                order.append(id); parts[id] = text
+            }
+        }
+        let text = order.compactMap { parts[$0] }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { throw Failure.emptyResponse }
+        return text
+    }
+
     static func arguments(
         for provider: AIProvider, model: String, workingDirectory: URL,
         responseSchemaURL: URL? = nil, imageURLs: [URL] = []
@@ -492,12 +573,18 @@ struct CLIChatProviderClient: AIChatTransport {
             var args = ["-p", "--output-format", "json", "--tools", ""]
             if chosenModel != "default" && !chosenModel.isEmpty { args += ["--model", chosenModel] }
             return args
+        case .opencodeCLI:
+            var args = ["run", "--format", "json", "--agent", "lima"]
+            if chosenModel != "default" && !chosenModel.isEmpty { args += ["--model", chosenModel] }
+            for imageURL in imageURLs { args += ["--file", imageURL.path] }
+            return args
         default:
             return []
         }
     }
 
     static func extractReply(from data: Data, provider: AIProvider) throws -> String {
+        if provider == .opencodeCLI { return try openCodeReply(from: data) }
         if provider == .claudeCLI,
            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             guard object["is_error"] as? Bool != true else {
@@ -538,7 +625,7 @@ struct CLIChatProviderClient: AIChatTransport {
             .map(String.init).first { line in
                 let lower = line.lowercased()
                 return lower.utf8.count <= 512 && (
-                    lower.hasPrefix("error") || lower.hasPrefix("claude:") || lower.hasPrefix("codex:") ||
+                    lower.hasPrefix("error") || lower.hasPrefix("claude:") || lower.hasPrefix("codex:") || lower.hasPrefix("opencode:") ||
                     ((lower.contains("usage limit") || lower.contains("weekly limit")) && lower.contains("reset"))
                 )
             }
@@ -591,7 +678,7 @@ struct CLIChatProviderClient: AIChatTransport {
         provider: AIProvider, model: String, prompt: String,
         structuredResponse: Bool, imageAttachments: [AIAttachment],
         transientImages: [TransientImage], onStarted: @escaping @Sendable () -> Void,
-        executableURLOverride: URL? = nil
+        executableURLOverride: URL? = nil, argumentsOverride: [String]? = nil, timeoutSeconds: Double = 180
     ) async throws -> Data {
         guard let executable = executableURLOverride ?? executableURL(for: provider) else {
             throw Failure.missingCLI(provider.title)
@@ -604,7 +691,7 @@ struct CLIChatProviderClient: AIChatTransport {
         defer { try? FileManager.default.removeItem(at: directory) }
         var imageURLs: [URL] = []
         if !imageAttachments.isEmpty {
-            guard provider == .codexCLI else { throw Failure.unsupportedAttachment }
+            guard provider.supportsChatImages else { throw Failure.unsupportedAttachment }
             for (index, attachment) in imageAttachments.enumerated() {
                 let image = try AIFileAttachmentPolicy.image(for: attachment)
                 guard let data = Data(base64Encoded: image.base64) else { throw Failure.unsupportedAttachment }
@@ -614,7 +701,7 @@ struct CLIChatProviderClient: AIChatTransport {
             }
         }
         if !transientImages.isEmpty {
-            guard provider == .codexCLI, transientImages.count <= 8 else {
+            guard provider.supportsChatImages, transientImages.count <= 8 else {
                 throw Failure.unsupportedAttachment
             }
             for (index, image) in transientImages.enumerated() {
@@ -634,11 +721,14 @@ struct CLIChatProviderClient: AIChatTransport {
 
         let process = Process()
         process.executableURL = executable
-        process.arguments = arguments(
+        process.arguments = argumentsOverride ?? arguments(
             for: provider, model: model, workingDirectory: directory,
             responseSchemaURL: responseSchemaURL, imageURLs: imageURLs
         )
         process.currentDirectoryURL = directory
+        if provider == .opencodeCLI {
+            process.environment = try openCodeEnvironment(in: ProcessInfo.processInfo.environment)
+        }
         let inputPipe = Pipe()
         let outputPipe = Pipe()
         let errorPipe = Pipe()
@@ -657,7 +747,7 @@ struct CLIChatProviderClient: AIChatTransport {
                     process.terminate()
                 }
             }
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 180, execute: timeout)
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds, execute: timeout)
             defer { timeout.cancel() }
             let stdoutReader = Task.detached(priority: .utility) {
                 await Self.readBoundedOffExecutor(outputPipe.fileHandleForReading, limit: maximumOutputBytes)
@@ -676,6 +766,11 @@ struct CLIChatProviderClient: AIChatTransport {
             try Task.checkCancellation()
             guard status == 0 else {
                 if timeoutState.didTimeOut { throw Failure.timedOut }
+                if provider == .opencodeCLI {
+                    do { _ = try openCodeReply(from: output) }
+                    catch Failure.diagnosed(let diagnostic) { throw Failure.diagnosed(diagnostic) }
+                    catch { /* Fall back to the process diagnostic below. */ }
+                }
                 throw Failure.diagnosed(diagnose(
                     provider: provider, status: status, stdout: output, stderr: stderr,
                     terminationReason: process.terminationReason

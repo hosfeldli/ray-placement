@@ -557,7 +557,7 @@ final class StealthGrammarRemoteClient {
         guard let base = Self.validatedBaseURL(configuration.baseURL) else { return nil }
         let url: URL?
         switch configuration.provider {
-        case .codexCLI, .claudeCLI:
+        case .codexCLI, .claudeCLI, .opencodeCLI:
             return nil
         case .openAI:
             url = URL(string: base + "/responses")
@@ -576,7 +576,7 @@ final class StealthGrammarRemoteClient {
         request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         switch configuration.provider {
-        case .codexCLI, .claudeCLI:
+        case .codexCLI, .claudeCLI, .opencodeCLI:
             return nil
         case .openAI:
             request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
@@ -761,7 +761,7 @@ final class StealthGrammarRemoteClient {
         }
         let value: String?
         switch provider {
-        case .codexCLI, .claudeCLI:
+        case .codexCLI, .claudeCLI, .opencodeCLI:
             throw ClientError.invalidResponse
         case .openAI:
             value = Self.extractResponsesText(from: object)

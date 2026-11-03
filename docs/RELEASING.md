@@ -52,6 +52,8 @@ The November 2, 2026 instruction to publish the completed changes authorizes the
 
 The November 3, 2026 instruction to publish Search improvements authorizes the incremental `v4.1.2`, including the completed extension overhaul and workspace repairs described in its tag-matched notes. Remaining live acceptance gates stay open and disclosed; automated CI, signing, integrity, and public-asset verification checks remain mandatory.
 
+The subsequent November 3, 2026 instruction to add OpenCode CLI compatibility, improve Search relevance, and publish a new minor version authorizes the incremental `v4.2.0` described in its tag-matched notes. Open live-acceptance gates remain disclosed; automated CI, signing, integrity, and public-asset verification checks remain mandatory.
+
 ## Prerequisites
 
 Run these commands from the app repository:

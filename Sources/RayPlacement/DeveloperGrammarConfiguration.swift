@@ -11,6 +11,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable, Sendable {
     case openAICompatible
     case codexCLI
     case claudeCLI
+    case opencodeCLI
 
     enum Access: Sendable {
         case authenticatedEndpoint
@@ -20,13 +21,14 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable, Sendable {
 
     var access: Access {
         switch self {
-        case .codexCLI, .claudeCLI: return .localCLI
+        case .codexCLI, .claudeCLI, .opencodeCLI: return .localCLI
         case .openAICompatible: return .optionalKeyEndpoint
         default: return .authenticatedEndpoint
         }
     }
 
     var isCLI: Bool { access == .localCLI }
+    var supportsChatImages: Bool { self != .claudeCLI }
     var requiresGrammarAPIKey: Bool { access == .authenticatedEndpoint }
     var requiresGrammarBaseURL: Bool { access != .localCLI }
     /// A failed local CLI must remain visible; only HTTP providers may opt into Harper fallback.
@@ -47,6 +49,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         case .openAICompatible: return "Custom OpenAI-compatible"
         case .codexCLI: return "OpenAI Codex CLI"
         case .claudeCLI: return "Claude CLI"
+        case .opencodeCLI: return "OpenCode CLI"
         }
     }
 
@@ -100,7 +103,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable, Sendable {
                 .init(id: "anthropic/claude-3.5-haiku", title: "Anthropic · Claude 3.5 Haiku"),
                 .init(id: "google/gemini-2.0-flash-001", title: "Google · Gemini 2.0 Flash")
             ]
-        case .openAICompatible, .codexCLI, .claudeCLI:
+        case .openAICompatible, .codexCLI, .claudeCLI, .opencodeCLI:
             return []
         }
     }
@@ -115,7 +118,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         case .deepSeek: return "https://api.deepseek.com/v1"
         case .openRouter: return "https://openrouter.ai/api/v1"
         case .openAICompatible: return "http://127.0.0.1:1234/v1"
-        case .codexCLI, .claudeCLI: return ""
+        case .codexCLI, .claudeCLI, .opencodeCLI: return ""
         }
     }
 
@@ -154,7 +157,7 @@ struct AIModelReference: Codable, Hashable, Sendable {
 }
 
 extension AIProvider {
-    static let chatProviders: [AIProvider] = [.openAI, .anthropic, .gemini, .openAICompatible, .codexCLI, .claudeCLI]
+    static let chatProviders: [AIProvider] = [.openAI, .anthropic, .gemini, .openAICompatible, .codexCLI, .claudeCLI, .opencodeCLI]
 
     var chatModels: [AIModelOption] {
         switch self {
@@ -166,7 +169,7 @@ extension AIProvider {
             return modelOptions.map { AIModelOption(id: $0.id, displayName: $0.title, supportsReasoning: false) }
         case .openAICompatible:
             return [AIModelOption(id: "local-model", displayName: "Custom model", supportsReasoning: false)]
-        case .codexCLI, .claudeCLI:
+        case .codexCLI, .claudeCLI, .opencodeCLI:
             return [AIModelOption(id: "default", displayName: "CLI default", supportsReasoning: false)]
         case .mistral, .xAI, .deepSeek, .openRouter:
             return modelOptions.map { AIModelOption(id: $0.id, displayName: $0.title, supportsReasoning: false) }
@@ -179,7 +182,7 @@ extension AIProvider {
         case .anthropic: return "claude-sonnet-4-20250514"
         case .gemini: return "gemini-2.5-flash"
         case .openAICompatible: return "local-model"
-        case .codexCLI, .claudeCLI: return "default"
+        case .codexCLI, .claudeCLI, .opencodeCLI: return "default"
         case .mistral, .xAI, .deepSeek, .openRouter: return defaultModel
         }
     }

@@ -1759,7 +1759,7 @@ final class AIChatViewModel: ObservableObject {
     /// catalog. Codex model/list is a catalog, not an account-access guarantee.
     var pickerModels: [AIModelOption] {
         let choices: [AIModelOption]
-        if provider == .codexCLI {
+        if provider == .codexCLI || provider == .opencodeCLI {
             let listed = modelCatalog.listedIDs(for: provider)
             choices = availableModels.filter { $0.id == "default" || listed.contains($0.id) }
         } else if provider.isCLI {
@@ -1773,7 +1773,7 @@ final class AIChatViewModel: ObservableObject {
     }
 
     var selectedModelIsRecommended: Bool {
-        if provider == .codexCLI {
+        if provider == .codexCLI || provider == .opencodeCLI {
             return model == "default" || modelCatalog.listedIDs(for: provider).contains(model)
                 || modelCatalog.verifiedCLIModelIDs(for: provider).contains(model)
         }
@@ -6781,7 +6781,7 @@ struct AIChatWorkspaceView: View {
                               steps: AIProviderSetupInstructions.steps(for: model.provider))
             }
             Text(model.provider.isCLI
-                ? "Use the CLI's local sign-in; Lima does not store another API key. Authorized Lima tools work through both CLIs. Codex CLI accepts attached images here; Claude CLI is text-only in this adapter."
+                ? "Use the CLI's local sign-in; Lima does not store another API key. Authorized Lima tools work through CLI providers. Codex and OpenCode accept attached images here; Claude CLI is text-only in this adapter."
                 : "Choose a provider and model. Lima stores API keys only in macOS Keychain and applies the same Tool Access policy to provider-routed Lima tools.")
                 .foregroundStyle(LimaTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -7546,7 +7546,9 @@ struct AIChatWorkspaceView: View {
 
     private var modelPicker: some View {
         Menu {
-            Text(model.provider == .codexCLI
+            Text(model.provider == .opencodeCLI
+                ? "CLI default and models discovered from OpenCode"
+                : model.provider == .codexCLI
                 ? "CLI default and models discovered from Codex"
                 : (model.provider == .claudeCLI
                     ? "CLI default and recently tested models"
@@ -7577,7 +7579,7 @@ struct AIChatWorkspaceView: View {
                 Label("Updating model list…", systemImage: "arrow.triangle.2.circlepath")
                     .foregroundStyle(LimaTheme.textSecondary)
             } else {
-                if model.provider == .codexCLI || !model.provider.isCLI {
+                if model.provider == .codexCLI || model.provider == .opencodeCLI || !model.provider.isCLI {
                     Button("Refresh Model List", action: model.refreshModels)
                         .disabled(!model.hasProviderAPIKey)
                 }

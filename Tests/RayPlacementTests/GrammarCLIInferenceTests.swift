@@ -62,7 +62,7 @@ private actor GrammarRuntimeFixture: GrammarToolFreeRuntime {
 @Test @MainActor func grammarCLICapabilitiesRequireNeitherAPIKeyNorEndpoint() {
     #expect(AIProvider.writingProviders.contains(.codexCLI))
     #expect(AIProvider.writingProviders.contains(.claudeCLI))
-    for provider in [AIProvider.codexCLI, .claudeCLI] {
+    for provider in [AIProvider.codexCLI, .claudeCLI, .opencodeCLI] {
         #expect(provider.access == .localCLI)
         #expect(!provider.requiresGrammarAPIKey)
         #expect(!provider.requiresGrammarBaseURL)

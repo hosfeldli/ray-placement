@@ -19,11 +19,23 @@ enum SearchRelevance {
         let fields = fields.map(normalize)
         let queryWords = tokens(query)
         let titleWords = tokens(title)
-        func covers(_ words: [String]) -> Bool {
-            !queryWords.isEmpty && queryWords.allSatisfy { token in words.contains { $0.hasPrefix(token) } }
+        func covers(_ words: [String], exact: Bool = false) -> Bool {
+            guard !queryWords.isEmpty else { return false }
+            var remaining = words
+            for token in queryWords.sorted(by: { $0.count > $1.count }) {
+                guard let index = remaining.firstIndex(of: token)
+                    ?? (exact ? nil : remaining.firstIndex(where: { $0.hasPrefix(token) })) else { return false }
+                remaining.remove(at: index)
+            }
+            return true
         }
         let detail = min(900, max(0, FuzzyMatcher.scoreNormalized(title, query: query) ?? 0) / 12)
         if title == query { return 100_000 + detail }
+        // Complete words are stronger intent than a prefix of a different word
+        // ("Open Terminal" beats "Terminalizer" for "terminal").
+        if covers(titleWords, exact: true) {
+            return 90_000 + detail
+        }
         if title.hasPrefix(query) { return 80_000 + detail }
         if covers(titleWords) { return 70_000 + detail }
         if title.contains(query) { return 60_000 + detail }

@@ -78,7 +78,7 @@ import Vision
 }
 
 @Test func sharedProviderRegistryIncludesChatCoreProviders() {
-    #expect(AIProvider.chatProviders == [.openAI, .anthropic, .gemini, .openAICompatible, .codexCLI, .claudeCLI])
+    #expect(AIProvider.chatProviders == [.openAI, .anthropic, .gemini, .openAICompatible, .codexCLI, .claudeCLI, .opencodeCLI])
     #expect(AIProviderClientRegistry.client(for: .openAI, openAICompatibleBaseURL: "") is AIChatResponsesClient)
     #expect(AIProviderClientRegistry.client(for: .anthropic, openAICompatibleBaseURL: "") is AnthropicAIProviderClient)
     #expect(AIProviderClientRegistry.client(for: .gemini, openAICompatibleBaseURL: "") is GeminiAIProviderClient)

@@ -67,7 +67,7 @@ enum AIProviderClientRegistry {
         switch provider {
         case .codexCLI:
             return CodexAppServerClient.shared
-        case .claudeCLI:
+        case .claudeCLI, .opencodeCLI:
             return CLIChatProviderClient(provider: provider)
         case .openAI:
             return AIChatResponsesClient()

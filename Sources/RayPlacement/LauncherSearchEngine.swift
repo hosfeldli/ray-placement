@@ -114,12 +114,12 @@ actor LauncherSearchEngine {
             if document.aliasTitle == aliasQuery {
                 provenance = (.exactTitle, 0)
             } else if document.normalizedUserAliases.contains(aliasQuery) {
-                provenance = (.userAlias, 90_000)
+                provenance = (.userAlias, 97_000)
             } else if document.id.hasPrefix("extension."), document.normalizedExtensionAliases.contains(aliasQuery) {
-                provenance = (.extensionAlias, 85_000)
+                provenance = (.extensionAlias, 96_000)
             } else if (document.id.hasPrefix("builtin.") || document.id.hasPrefix("context.")),
                       document.normalizedKeywords.contains(aliasQuery) {
-                provenance = (.builtInAlias, 0)
+                provenance = (.builtInAlias, 94_000)
             } else {
                 provenance = (.exactTitle, 0)
             }
