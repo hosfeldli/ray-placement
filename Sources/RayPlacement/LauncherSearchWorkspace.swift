@@ -92,8 +92,7 @@ struct LauncherSearchWorkspace: View {
     private var input: Binding<String> {
         if model.isAskingAI { return $model.aiPrompt }
         if searchingNotes {
-            return Binding(get: { UniversalSearchCoordinator.parse(model.query).query },
-                           set: { model.query = "note: " + $0 })
+            return Binding(get: { model.notesSearchText }, set: { model.notesSearchText = $0 })
         }
         return $model.query
     }

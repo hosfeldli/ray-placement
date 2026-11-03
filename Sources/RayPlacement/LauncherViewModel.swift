@@ -208,6 +208,17 @@ final class LauncherViewModel: ObservableObject {
         delegate?.launcherViewModel(self, perform: item.action, item: item)
     }
 
+    var notesSearchText: String {
+        get {
+            guard UniversalSearchCoordinator.parse(query).prefix == "note",
+                  let colon = query.firstIndex(of: ":") else { return query }
+            var text = String(query[query.index(after: colon)...])
+            if text.first == " " { text.removeFirst() }
+            return text
+        }
+        set { query = "note: " + newValue }
+    }
+
     func searchNotes() {
         let text = UniversalSearchCoordinator.parse(query).query
         if mode != .root { enter(.root) }

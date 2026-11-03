@@ -66,6 +66,10 @@ import RayPlacementCore
     model.searchNotes()
     #expect(model.query == "note: trip")
     #expect(model.placeholder == "Search your notes…")
+    model.notesSearchText = "cafe "
+    #expect(model.notesSearchText == "cafe ")
+    model.notesSearchText += "reservation"
+    #expect(model.query == "note: cafe reservation")
     model.query = ""
     model.startRecordingFromSearch()
     #expect(recorder.actions.count == 1)
